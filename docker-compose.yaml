@@ -1,0 +1,242 @@
+services:
+  # ------------------------------------------------------------
+  # 1) flag-service (este repositório)
+  # ------------------------------------------------------------
+  flag-service:
+    build:
+      context: ./flag-service-main
+      dockerfile: Dockerfile
+    container_name: flag-service
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    environment:
+      PORT: "8002"
+      DATABASE_URL: "postgres://flag_user:local_dev_password@flag-db:5432/flag_db?sslmode=disable"
+      AUTH_SERVICE_URL: "http://auth-service:8001"
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      flag-db:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    networks:
+      - app-network
+
+  # ------------------------------------------------------------
+  # 2) auth-service (exemplo de microsserviço protegido)
+  # ------------------------------------------------------------
+  auth-service:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    container_name: auth-service
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      PORT: "8001"
+      DATABASE_URL: "postgres://auth_user:local_dev_password@auth-db:5432/auth_db?sslmode=disable"
+      MASTER_KEY: "local_dev_master_key_change_me"
+    depends_on:
+      auth-db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # ------------------------------------------------------------
+  # 3) gateway-service
+  # ------------------------------------------------------------
+  gateway-service:
+    build:
+      context: ./gateway-service
+      dockerfile: Dockerfile
+    container_name: gateway-service
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      FLAG_SERVICE_URL: "http://flag-service:8002"
+      AUTH_SERVICE_URL: "http://auth-service:8001"
+    depends_on:
+      - flag-service
+      - auth-service
+    networks:
+      - app-network
+
+  # ------------------------------------------------------------
+  # 4) user-service
+  # ------------------------------------------------------------
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    container_name: user-service
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+    environment:
+      PORT: "8003"
+      DATABASE_URL: "postgres://user_user:local_dev_password@user-db:5432/user_db?sslmode=disable"
+      REDIS_URL: "redis://redis:6379/0"
+    depends_on:
+      user-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # ------------------------------------------------------------
+  # 5) notification-service
+  # ------------------------------------------------------------
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    container_name: notification-service
+    restart: unless-stopped
+    ports:
+      - "8004:8004"
+    environment:
+      PORT: "8004"
+      DATABASE_URL: "postgres://notification_user:local_dev_password@notification-db:5432/notification_db?sslmode=disable"
+      DYNAMODB_ENDPOINT: "http://dynamodb-local:8000"
+    depends_on:
+      notification-db:
+        condition: service_healthy
+      dynamodb-local:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # ------------------------------------------------------------
+  # Bancos de dados - 4 infra local
+  # 2 PostgreSQL + 1 Redis + 1 DynamoDB Local
+  # ------------------------------------------------------------
+  flag-db:
+    image: postgres:16-alpine
+    container_name: flag-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: flag_db
+      POSTGRES_USER: flag_user
+      POSTGRES_PASSWORD: local_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - flag_pgdata:/var/lib/postgresql/data
+      - ./flag-service-main/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flag_user -d flag_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app-network
+
+  auth-db:
+    image: postgres:16-alpine
+    container_name: auth-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: auth_db
+      POSTGRES_USER: auth_user
+      POSTGRES_PASSWORD: local_dev_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - auth_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth_user -d auth_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app-network
+
+  user-db:
+    image: postgres:16-alpine
+    container_name: user-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: user_db
+      POSTGRES_USER: user_user
+      POSTGRES_PASSWORD: local_dev_password
+    ports:
+      - "5434:5432"
+    volumes:
+      - user_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_user -d user_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app-network
+
+  notification-db:
+    image: postgres:16-alpine
+    container_name: notification-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: notification_db
+      POSTGRES_USER: notification_user
+      POSTGRES_PASSWORD: local_dev_password
+    ports:
+      - "5435:5432"
+    volumes:
+      - notification_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notification_user -d notification_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app-network
+
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: dynamodb-local
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
+    volumes:
+      - dynamodb_data:/home/dynamodblocal/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app-network
+
+volumes:
+  flag_pgdata:
+  auth_pgdata:
+  user_pgdata:
+  notification_pgdata:
+  redis_data:
+  dynamodb_data:
+
+networks:
+  app-network:
+    driver: bridge
